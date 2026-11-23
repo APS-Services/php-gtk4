@@ -119,21 +119,72 @@ final class PiePackageTest extends TestCase
     public function testTheReleaseWorkflowNamesTheWindowsAssetTheWayPieLooksForIt(): void
     {
         $release = (string) file_get_contents(self::ROOT . '/.github/workflows/release.yml');
-        if (preg_match('/^\s*dll-name:\s*(\S.*)$/m', $release, $m) !== 1) {
-            self::fail('release.yml no longer passes a dll-name to windows-build.yml');
+        $build = (string) file_get_contents(self::ROOT . '/.github/workflows/windows-build.yml');
+        if (preg_match('/^\s*asset-stem:\s*(\S.*)$/m', $release, $m) !== 1) {
+            self::fail('release.yml no longer passes an asset-stem to windows-build.yml');
         }
-
-        $name = trim($m[1]);
         $extension = self::phpExt()['extension-name'];
         self::assertIsString($extension);
-        // The workflow expressions fill in version, PHP version and thread model.
-        $expected = 'php_' . $extension . '-${{ needs.plan.outputs.relver }}'
-            . '-${{ matrix.php }}-${{ matrix.ts }}-vs17-x86_64.dll';
-        self::assertSame($expected, $name, 'the Windows asset name is no longer what PIE looks for');
-        self::assertSame(strtolower($name), $name, 'PIE compares lower-cased names');
+        self::assertSame('php_' . $extension . '-${{ needs.plan.outputs.relver }}', trim($m[1]));
+
+        // windows-build.yml adds PHP version, thread model and compiler: the one the PHP minor is
+        // built with (vs17 for 8.4/8.5, vs18 from 8.6), from its PHP_SDK_VS table.
+        self::assertStringContainsString(
+            '"$stem-${{ inputs.php }}-${{ inputs.ts }}-$env:PHP_SDK_VS-x86_64.dll"',
+            $build,
+            'the Windows asset name is no longer what PIE looks for',
+        );
+        if (preg_match('/^\s*PHP_SDK_VS:\s*(\S.*)$/m', $build, $table) !== 1) {
+            self::fail('windows-build.yml no longer sets PHP_SDK_VS');
+        }
+        preg_match_all('/"\d+\.\d+":"([^"]*)"/', $table[1], $compilers);
+        self::assertNotEmpty($compilers[1], 'PHP_SDK_VS is no longer a PHP version -> compiler table');
+        foreach ($compilers[1] as $compiler) {
+            self::assertMatchesRegularExpression('/^vs\d+$/', $compiler, 'PIE compares lower-cased names');
+        }
 
         // ...and the zip around it, which is the asset PIE actually downloads.
         self::assertStringContainsString('zip -qj "${dll%.dll}.zip" "$dll"', $release);
+    }
+
+    /**
+     * windows-build.yml picks the compiler (PHP_SDK_VS) and the runner image that has it from two
+     * tables keyed by PHP minor. A minor only in the image table builds with an empty compiler and
+     * fails late, at the devel pack download, on a run that is weekly or paths-filtered; one only in
+     * the compiler table has no runner. Both tables cover the same minors, every one the Windows
+     * matrices build.
+     */
+    public function testTheWindowsCompilerAndRunnerTablesCoverEveryBuiltPhp(): void
+    {
+        $build = (string) file_get_contents(self::ROOT . '/.github/workflows/windows-build.yml');
+        $keys = static function (string $pattern) use ($build): array {
+            self::assertSame(1, preg_match($pattern, $build, $line), "windows-build.yml: no $pattern");
+            preg_match_all('/"(\d+\.\d+)":"/', $line[1], $m);
+            $minors = $m[1];
+            sort($minors);
+
+            return $minors;
+        };
+        $compilers = $keys('/^\s*PHP_SDK_VS:\s*(\S.*)$/m');
+        self::assertSame($compilers, $keys('/^\s*runs-on:\s*(\S.*)$/m'), 'the two tables cover other minors');
+
+        foreach (['windows.yml', 'release.yml'] as $workflow) {
+            $text = (string) file_get_contents(self::ROOT . "/.github/workflows/$workflow");
+            if ($workflow === 'release.yml') { // its other matrices are the Linux ones
+                if (preg_match('/^  build-windows:\n(.*?)(?=^  [\w-]+:\n)/ms', $text, $job) !== 1) {
+                    self::fail('release.yml has no build-windows job any more');
+                }
+                $text = $job[1];
+            }
+            preg_match_all('/php: \\[([^\\]]*)\\]/', $text, $matrices);
+            self::assertNotEmpty($matrices[1], "$workflow: no Windows php matrix");
+            foreach ($matrices[1] as $matrix) {
+                preg_match_all("/'(\\d+\\.\\d+)'/", $matrix, $built);
+                foreach ($built[1] as $minor) {
+                    self::assertContains($minor, $compilers, "$workflow builds PHP $minor, which the tables lack");
+                }
+            }
+        }
     }
 
     /** Both thread models are published, or a Windows ZTS `pie install` finds nothing. */

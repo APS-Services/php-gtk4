@@ -7,6 +7,19 @@ mirrored into `src/php_gtk4.h`, `src/gtk4.stub.php` and the built module by `./c
 
 ## [Unreleased]
 
+### Added
+
+- **PHP 8.6.** Built and tested in CI for 8.4, 8.5 and 8.6, NTS and ZTS, on Linux and Windows, and
+  released for it. 8.6 is the first PHP built with Visual Studio 2026, so its Windows builds are
+  `php_gtk4-<ver>-8.6-<nts|ts>-vs18-x86_64.zip` (built on `windows-2025-vs2026`); 8.4 and 8.5 stay
+  vs17. Four engine changes are adapted to, on every supported version: `XtOffsetOf` is gone
+  (`offsetof`, which it always was); `zend_exception_save()`/`zend_exception_restore()` are gone,
+  so every vfunc thunk parks a pending Throwable with `set_aside_exception()`/`put_back_exception()`
+  in `core/error` - what Zend does around a `__destruct()`; the weak float and bool conversions
+  return the value or a status (`parse_double_weak()`/`parse_bool_weak()` in `php_gtk4.h`); and an
+  enum case's constant has the case id as a new child, which `enums_verify()` now reads past - and
+  stops at a layout it does not know, instead of checking nothing.
+
 ## [0.4.0] - 2026-11-23
 
 GVariant, D-Bus and the GDK surface side, and the fix that lets the extension be loaded with `dl()`
