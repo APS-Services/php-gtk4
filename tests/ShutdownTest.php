@@ -32,4 +32,49 @@ final class ShutdownTest extends TestCase
         self::assertStringNotContainsString('Segmentation', $output);
         self::assertStringNotContainsString('CRITICAL', $output);
     }
+
+    /**
+     * dl() registers every class at runtime, where OPcache leaves the enum case names
+     * un-interned; the engine freed them with the wrong allocator when it unloaded the
+     * module ("zend_mm_heap corrupted", src/core/enums.h). The Windows PHP bundles load
+     * the extension this way.
+     */
+    public function testDlUnderOpcacheExitsCleanly(): void
+    {
+        $module = getenv('GTK4_SO') ?: (getenv('GTK4_DLL') ?: './gtk4.so');
+        // dl() takes a bare file name from extension_dir. A bare GTK4_SO (=gtk4, the installed
+        // module) already is one, and dl() adds the platform's suffix to it.
+        $extDir = (string) ini_get('extension_dir');
+        if (strpbrk($module, '/\\') !== false) {
+            $so = (string) realpath($module);
+            self::assertFileExists($so);
+            [$extDir, $module] = [dirname($so), basename($so)];
+        }
+        $opcache = '';
+        if (PHP_VERSION_ID < 80500) { // 8.5 builds OPcache in
+            $file = PHP_OS_FAMILY === 'Windows' ? 'php_opcache.dll' : 'opcache.so';
+            foreach ([ini_get('extension_dir') ?: '', dirname(PHP_BINARY) . '/ext'] as $dir) {
+                if ($opcache === '' && is_file("$dir/$file")) {
+                    $opcache = '-d ' . escapeshellarg("zend_extension=$dir/$file");
+                }
+            }
+            self::assertNotSame('', $opcache, "no shared $file next to this PHP");
+        }
+        // No ! " or % in the code: Windows' escapeshellarg() blanks them.
+        $code = 'dl(' . var_export($module, true) . ');'
+            . " echo Gtk4\\GtkAlign::from(Gtk4\\GtkAlign::Center->value)->name, ' ',"
+            . " count(Gtk4\\ExceptionMode::cases()), ' ', is_array(opcache_get_status()) ? 'opcache' : '-';";
+        $cmd = sprintf(
+            '%s -n %s -d opcache.enable_cli=1 -d enable_dl=1 -d %s -r %s 2>&1',
+            escapeshellarg(PHP_BINARY),
+            $opcache,
+            escapeshellarg('extension_dir=' . $extDir),
+            escapeshellarg($code),
+        );
+        $out = [];
+        exec($cmd, $out, $rc);
+        $output = implode("\n", $out);
+        self::assertSame(0, $rc, "exit code $rc:\n$output");
+        self::assertSame('Center 2 opcache', $output);
+    }
 }
